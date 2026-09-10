@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { getSSLRenewalDate } = require('../utils/ssl-checker');
+const { normalizeHostname } = require('../utils/hostname');
 const { syncDomainCertificates } = require('../services/cert-sync');
 const { computeStatus } = require('../services/status');
 const multer = require('multer');
@@ -39,9 +40,15 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'domain_name is required' });
     }
 
+    // Accept "https://yahoo.com/" / "www.yahoo.com" / etc., store the bare host.
+    const normalized = normalizeHostname(domain_name);
+    if (!normalized) {
+      return res.status(400).json({ error: 'domain_name could not be parsed as a hostname' });
+    }
+
     const domainResult = await pool.query(
       'INSERT INTO domains (user_id, domain_name, notes) VALUES ($1, $2, $3) RETURNING *',
-      [req.user.id, domain_name.trim(), notes || '']
+      [req.user.id, normalized, notes || '']
     );
 
     const inserted = domainResult.rows[0];
@@ -258,7 +265,7 @@ router.post('/import', upload.single('csvFile'), async (req, res, next) => {
           continue;
         }
 
-        const domainName = cells[0].trim();
+        const domainName = normalizeHostname(cells[0]);
         const notes = cells[1] || '';
 
         if (!domainName) continue;

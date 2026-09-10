@@ -11,6 +11,7 @@ const pool = require('../db');
 const { fetchCertsFromCT } = require('./crt-sh');
 const { scanHost } = require('./cert-scanner');
 const { computeStatus } = require('./status');
+const { normalizeHostname } = require('../utils/hostname');
 
 const LOG = (msg) => console.log(`[cert-sync] ${msg}`);
 
@@ -49,7 +50,9 @@ async function upsertScan(domainId, host, scan) {
 }
 
 async function syncDomainCertificates(domainId, domainName) {
-  const host = domainName.trim().toLowerCase();
+  // Defensive: normalize whatever is stored (e.g. "https://yahoo.com/") to a
+  // bare hostname. Handles rows that predate input normalization at insert.
+  const host = normalizeHostname(domainName) || String(domainName).trim().toLowerCase();
 
   // 1. CT issuance history.
   let ctCerts = [];
