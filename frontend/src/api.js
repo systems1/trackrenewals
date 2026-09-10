@@ -51,6 +51,16 @@ export async function refreshSSL(id) {
   });
 }
 
+export async function getDomainCerts(id) {
+  return request(`/api/domains/${id}/certs`);
+}
+
+export async function refreshDomainCerts(id) {
+  return request(`/api/domains/${id}/refresh`, {
+    method: 'POST',
+  });
+}
+
 export async function importDomainsCSV(file) {
   const formData = new FormData();
   formData.append('csvFile', file);

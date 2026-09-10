@@ -2,6 +2,8 @@ const express = require('express');
 const pool = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { getSSLRenewalDate } = require('../utils/ssl-checker');
+const { syncDomainCertificates } = require('../services/cert-sync');
+const { computeStatus } = require('../services/status');
 const multer = require('multer');
 const csvParser = require('csv-parser');
 const fs = require('fs');
@@ -11,11 +13,15 @@ const upload = multer({ dest: '/tmp/' });
 
 router.use(requireAuth);
 
-// ── List domains ───────────────────────────────────────────────────────────────
+// ── List domains (with cert count) ────────────────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM domains WHERE user_id = $1 ORDER BY created_at DESC',
+      `SELECT d.*,
+              (SELECT COUNT(*) FROM certs c WHERE c.domain_id = d.id) AS cert_count
+       FROM domains d
+       WHERE d.user_id = $1
+       ORDER BY d.created_at DESC`,
       [req.user.id]
     );
     res.json(result.rows);
@@ -40,14 +46,13 @@ router.post('/', async (req, res, next) => {
 
     const inserted = domainResult.rows[0];
 
-    const sslDate = await getSSLRenewalDate(inserted.domain_name.trim());
-    if (sslDate) {
-      const updateResult = await pool.query(
-        'UPDATE domains SET ssl_renewal = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *',
-        [sslDate, inserted.id, req.user.id]
-      );
-      return res.status(201).json(updateResult.rows[0]);
-    }
+    // Agentless cert discovery (CT logs) + endpoint scan, in the background.
+    // The dashboard shows the domain as "scanning…" until last_synced_at lands.
+    // syncDomainCertificates is the single source of truth for ssl_renewal /
+    // cert_status — no legacy TLS write here (it would race and clobber the scan).
+    syncDomainCertificates(inserted.id, inserted.domain_name).catch((err) => {
+      console.error(`[cert-sync] background sync failed for ${inserted.domain_name}:`, err);
+    });
 
     res.status(201).json(inserted);
   } catch (err) {
@@ -55,6 +60,102 @@ router.post('/', async (req, res, next) => {
       // unique_violation (user_id, domain_name)
       return res.status(409).json({ error: 'Domain already exists for this user' });
     }
+    next(err);
+  }
+});
+
+// ── Cert detail for a domain (CT history + served cert + status) ─────────────
+// Shared payload builder for GET /:id/certs and POST /:id/refresh.
+async function buildCertPayload(domain) {
+  const certsRes = await pool.query(
+    `SELECT serial, fingerprint, common_name, sans, issuer, not_before, not_after, source, first_seen, last_seen
+     FROM certs WHERE domain_id = $1 ORDER BY not_before DESC NULLS LAST LIMIT 100`,
+    [domain.id]
+  );
+
+  const scanRes = await pool.query(
+    'SELECT * FROM scans WHERE domain_id = $1 ORDER BY scanned_at DESC LIMIT 1',
+    [domain.id]
+  );
+  const latestScan = scanRes.rows[0] || null;
+
+  const servedCert = latestScan
+    ? {
+        host: latestScan.host,
+        serial: latestScan.served_serial,
+        fingerprint: latestScan.served_fingerprint,
+        common_name: latestScan.served_common_name,
+        not_after: latestScan.served_not_after,
+        issuer: latestScan.served_issuer,
+        chain_ok: latestScan.chain_ok,
+      }
+    : null;
+
+  const { domainStatus, certs } = computeStatus({
+    ctCerts: certsRes.rows.map((r) => ({
+      serial: r.serial,
+      fingerprint: r.fingerprint,
+      common_name: r.common_name,
+      sans: r.sans || [],
+      issuer: r.issuer,
+      not_before: r.not_before,
+      not_after: r.not_after,
+    })),
+    servedCert,
+  });
+
+  return {
+    domain: {
+      ...domain,
+      cert_status: domainStatus,
+    },
+    status: domainStatus,
+    certs,
+    servedCert,
+    last_synced_at: domain.last_synced_at,
+  };
+}
+
+// GET a domain's certificates (does not re-scan; returns stored state).
+router.get('/:id/certs', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid domain id' });
+    }
+    const lookup = await pool.query(
+      'SELECT * FROM domains WHERE id = $1 AND user_id = $2',
+      [id, req.user.id]
+    );
+    if (lookup.rowCount === 0) {
+      return res.status(404).json({ error: 'Domain not found' });
+    }
+    res.json(await buildCertPayload(lookup.rows[0]));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST a manual re-scan: CT + endpoint, then return fresh payload.
+router.post('/:id/refresh', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid domain id' });
+    }
+    const lookup = await pool.query(
+      'SELECT * FROM domains WHERE id = $1 AND user_id = $2',
+      [id, req.user.id]
+    );
+    if (lookup.rowCount === 0) {
+      return res.status(404).json({ error: 'Domain not found' });
+    }
+    const domain = lookup.rows[0];
+    await syncDomainCertificates(domain.id, domain.domain_name);
+
+    const fresh = await pool.query('SELECT * FROM domains WHERE id = $1', [id]);
+    res.json(await buildCertPayload(fresh.rows[0]));
+  } catch (err) {
     next(err);
   }
 });
@@ -80,15 +181,8 @@ router.put('/:id', async (req, res, next) => {
 
     const updated = result.rows[0];
 
-    const sslDate = await getSSLRenewalDate(updated.domain_name.trim());
-    if (sslDate) {
-      const sslResult = await pool.query(
-        'UPDATE domains SET ssl_renewal = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *',
-        [sslDate, id, req.user.id]
-      );
-      return res.json(sslResult.rows[0]);
-    }
-
+    // Notes update only. cert_status / ssl_renewal are owned by the cert-sync
+    // engine; a manual re-check is available via POST /:id/refresh.
     res.json(updated);
   } catch (err) {
     next(err);
@@ -182,17 +276,13 @@ router.post('/import', upload.single('csvFile'), async (req, res, next) => {
         const inserted = insertResult.rows[0];
         imported += 1;
 
-        try {
-          const sslDate = await getSSLRenewalDate(inserted.domain_name.trim());
-          if (sslDate) {
-            await pool.query(
-              'UPDATE domains SET ssl_renewal = $1, updated_at = NOW() WHERE id = $2',
-              [sslDate, inserted.id]
-            );
-          }
-        } catch (sslErr) {
-          // Ignore SSL lookup errors for this row
-        }
+        // Kick off the cert-intelligence sync in the background (CT + TLS scan).
+        // Rows stay "not-scanned" until the sync lands. Runs concurrently with
+        // the rest of the import, so large files are no longer bottlenecked by
+        // per-row serial SSL checks.
+        syncDomainCertificates(inserted.id, inserted.domain_name).catch((err) => {
+          console.error(`[cert-sync] background sync failed for ${inserted.domain_name}:`, err);
+        });
       } catch (rowErr) {
         // Ignore row-level errors and continue processing
       }
