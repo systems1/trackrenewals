@@ -310,13 +310,6 @@ Without Google OAuth credentials, the app boots but login fails. All data stays 
 ---
 
 ## Use Cases
-
-**Managed Service Providers (MSPs)**
-Track SSL certificates across every client domain from one dashboard. Import hundreds of domains via CSV, get alerts before expiry, and catch issued-but-not-deployed renewals before they become outages.
-
-**Web Agencies**
-Every client site uses SSL. Manage renewals across all your client properties in one place — no more relying on clients to forward renewal emails they never read.
-
 **DevOps / Platform Teams**
 Monitor SSL status for all production, staging, and internal domains. Detect cert drift (new issuance without deployment) that monitoring tools miss.
 
