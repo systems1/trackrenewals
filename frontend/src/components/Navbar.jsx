@@ -35,7 +35,7 @@ export default function Navbar() {
           <BrandMark />
         </span>
         <span className="wordmark">
-          Track<span>Assets</span>
+          Track<span>CertRenewals</span>
         </span>
       </div>
       {user && (
