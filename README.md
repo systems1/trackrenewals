@@ -34,7 +34,22 @@ For MSPs, web agencies, and anyone managing multiple domains, keeping track of S
 - **Domain SSL Renewal Dashboard** — Stat cards (total / healthy / at-risk / expired), filterable domain list with status badges and expiry day counts
 - **CSV Import / Export** — Bulk-add domains from a spreadsheet; export your entire portfolio to CSV anytime
 - **Google OAuth Login** — One-click sign-in; no passwords to manage, no separate auth system
+- **Per-Domain Notes** — Free-text notes for every domain (client contact, hosting details, ticket links, next action) — each domain keeps its own info right next to its cert status
 - **Self-Hosted, Private** — Your data stays on your infrastructure; no SaaS subscription, no external data sharing
+
+---
+
+## Screenshots
+
+### Dashboard — SSL cert status at a glance
+Stat cards, status badges (valid / expiring / expired / issued-not-deployed), expiry day counts, and filterable domain list — every domain's SSL renewal in one view.
+
+![TrackRenewals Dashboard](screenshots/dashboard.jpeg)
+
+### Per-Domain Notes — client & domain info on every cert
+Each domain carries its own free-text notes (contact, hosting, renewal vendor, internal links) alongside its cert status — so the person who has to act on a renewal already has the context.
+
+![TrackRenewals Per-Domain Notes](screenshots/domain-info-notes.jpeg)
 
 ---
 
@@ -285,6 +300,9 @@ trackrenewals/
 │   ├── ssl-renewal-spec.md
 │   ├── csv-import-export-spec.md
 │   └── review.md
+├── screenshots/                         # Screenshots referenced by README
+│   ├── dashboard.jpeg                   # Dashboard with SSL status badges
+│   └── domain-info-notes.jpeg           # Per-domain notes feature
 ├── .env.example                         # Environment variable template
 ├── docker-compose.yml                   # PostgreSQL + Express + Vite
 ├── CLAUDE.md                            # AI assistant guide to the codebase
